@@ -125,13 +125,28 @@ export default function Home() {
             }
             if (!stopRequestedRef.current) {
               queueMicrotask(() => {
-                readerRef.current?.read().then(process);
+                readerRef.current
+                  ?.read()
+                  .then(process)
+                  .catch((error) => {
+                    console.log("Error reading audio stream:", error);
+                    Swal.fire({
+                      title: "Error!",
+                      text: "Something went wrong. Please try again.",
+                      icon: "error",
+                    });
+                  });
               });
             }
           }
         })
         .catch((error) => {
           console.log("Error reading audio stream:", error);
+          Swal.fire({
+            title: "Error!",
+            text: "Something went wrong. Please try again.",
+            icon: "error",
+          });
         });
     }
   };
