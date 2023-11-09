@@ -66,11 +66,8 @@ async function* audioChunkGenerator(text: string) {
       newBuffer.set(chunk, buffer.byteLength);
       buffer = newBuffer;
 
-      // Only yield if we have enough data or if byte length is even
-      if (
-        buffer.byteLength >= MIN_CHUNK_SIZE || // TODO
-        buffer.byteLength % 2 === 0
-      ) {
+      // Only yield if byte length is even
+      if (buffer.byteLength % 2 === 0) {
         yield buffer;
         buffer = new Uint8Array(0); // Reset buffer
       }

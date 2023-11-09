@@ -44,6 +44,7 @@ class AudioProcessor extends AudioWorkletProcessor {
 
       if (this.isEndofChunks && !audioQueueLength) {
         console.log("AudioWorkletProcessor process: STOPPED");
+        this.port.postMessage({ type: "playback-complete" });
         return false; // Stops the processor
       }
 

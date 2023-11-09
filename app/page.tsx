@@ -11,7 +11,6 @@ import {
   Text,
   TextArea,
   Link,
-  IconButton,
 } from "@radix-ui/themes";
 import {
   Cross1Icon,
@@ -89,7 +88,6 @@ export default function Home() {
               console.log('Sending "audio-end" message to Audio Worklet');
               scriptNodeRef.current.port.postMessage({ type: "audio-end" });
             }
-            setState("ready");
             return;
           }
 
@@ -179,8 +177,6 @@ export default function Home() {
       scriptNodeRef.current.port.postMessage({
         type: "stop-processor",
       });
-      scriptNodeRef.current.disconnect();
-      scriptNodeRef.current = null;
     }
 
     // Suspend the audio context
@@ -193,7 +189,6 @@ export default function Home() {
   const handleFormSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    // TODO: enforce character limit here and an error UI
     if (text.length === 0 || state === "streaming" || state === "playing") {
       return;
     }
@@ -220,17 +215,16 @@ export default function Home() {
             "audio-processor"
           );
           scriptNodeRef.current.connect(audioContextRef?.current.destination);
+          scriptNodeRef.current.port.onmessage = (event) => {
+            if (event.data.type === "playback-complete") {
+              setState("ready");
+            }
+          };
         }
       } catch (error) {
         console.error("Error initializing audio worklet:", error);
       }
     };
-
-    // If the scriptNode already exists, disconnect it to reset
-    if (scriptNodeRef.current) {
-      scriptNodeRef.current.disconnect();
-      scriptNodeRef.current = null;
-    }
 
     if (audioContextRef.current.state === "suspended") {
       await audioContextRef.current.resume();
