@@ -10,7 +10,16 @@ import {
   Flex,
   Text,
   TextArea,
+  Link,
+  IconButton,
 } from "@radix-ui/themes";
+import {
+  Cross1Icon,
+  PlayIcon,
+  ReloadIcon,
+  StopIcon,
+} from "@radix-ui/react-icons";
+
 import Swal from "sweetalert2";
 
 const BUFFER_SIZE = 128;
@@ -28,6 +37,7 @@ export default function Home() {
   const hasSkippedHeaderRef = useRef(false);
   const scriptNodeRef = useRef<AudioWorkletNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const stopRequestedRef = useRef(false);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | undefined>(
     undefined
   );
@@ -41,12 +51,13 @@ export default function Home() {
     };
   }, []);
 
-  const playAudioStream = async (response: Response) => {
-    const reader = response.body?.getReader();
+  const playAudioStream = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>
+  ) => {
     readerRef.current = reader;
 
-    if (reader) {
-      reader
+    if (readerRef.current) {
+      readerRef.current
         .read()
         .then(function process({ done, value }) {
           // In our api implementation, we are streaming error messages if any
@@ -56,7 +67,7 @@ export default function Home() {
               setState("error");
               if (scriptNodeRef.current && scriptNodeRef.current.port) {
                 scriptNodeRef.current.port.postMessage({
-                  type: "stream-error",
+                  type: "stop-processor",
                 });
               }
               Swal.fire({
@@ -67,6 +78,10 @@ export default function Home() {
               return;
             }
           } catch (error) {}
+
+          if (stopRequestedRef.current) {
+            return;
+          }
 
           if (done) {
             // Signal the end of the audio stream
@@ -100,26 +115,9 @@ export default function Home() {
               audioQueueRef.current.push(chunk);
               startIdx += chunkSize;
 
-              // // Check if the audio is playing and send the chunk to the worklet
-              // if (
-              //   !isPlayingRef.current &&
-              //   audioQueueRef.current.length >= INITIAL_BUFFER_SIZE
-              // ) {
-              //   isPlayingRef.current = true;
-
-              //   // empty the queue
-              //   console.log("emptying the queue");
-              //   for (let i = 0; i < INITIAL_BUFFER_SIZE; i++) {
-              //     const chunk = audioQueueRef.current.shift();
-              //     if (scriptNodeRef.current) {
-              //       scriptNodeRef.current.port.postMessage({
-              //         type: "audio-chunk",
-              //         chunk,
-              //       });
-              //     }
-              //   }
-              // }
-
+              if (state !== "playing") {
+                setState("playing");
+              }
               if (scriptNodeRef.current) {
                 scriptNodeRef.current.port.postMessage({
                   type: "audio-chunk",
@@ -127,9 +125,11 @@ export default function Home() {
                 });
               }
             }
-            queueMicrotask(() => {
-              reader.read().then(process);
-            });
+            if (!stopRequestedRef.current) {
+              queueMicrotask(() => {
+                readerRef.current?.read().then(process);
+              });
+            }
           }
         })
         .catch((error) => {
@@ -139,9 +139,14 @@ export default function Home() {
   };
 
   const handleSynthesis = async (text: string) => {
+    // reset everything
     if (scriptNodeRef.current && scriptNodeRef.current.port) {
       scriptNodeRef.current.port.postMessage({ type: "reset-processor" });
     }
+    audioQueueRef.current = [];
+    stopRequestedRef.current = false;
+    hasSkippedHeaderRef.current = false;
+
     try {
       setState("streaming");
       const res = await fetch("/api/resemble", {
@@ -151,11 +156,38 @@ export default function Home() {
         },
         body: JSON.stringify({ query: text }),
       });
-      setState("playing");
-      playAudioStream(res);
+      const reader = res.body?.getReader();
+      if (reader) {
+        readerRef.current = reader;
+        playAudioStream(readerRef.current);
+      }
     } catch (error) {
       console.error("Error:", error);
     }
+  };
+
+  const stopAudio = () => {
+    // If we have an ongoing reader, cancel it
+    setState("ready");
+    stopRequestedRef.current = true;
+    if (readerRef.current) {
+      readerRef.current.cancel();
+    }
+
+    // Stop all audio processing
+    if (scriptNodeRef.current) {
+      scriptNodeRef.current.port.postMessage({
+        type: "stop-processor",
+      });
+      scriptNodeRef.current.disconnect();
+      scriptNodeRef.current = null;
+    }
+
+    // Suspend the audio context
+    if (audioContextRef.current) {
+      audioContextRef.current.suspend();
+    }
+    audioQueueRef.current = [];
   };
 
   const handleFormSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -225,9 +257,7 @@ export default function Home() {
                 autoFocus
                 value={text}
                 onChange={(e) => {
-                  if (+e.target.value <= MAX_TEXT_LENGTH) {
-                    setText(e.target.value);
-                  }
+                  setText(e.target.value);
                 }}
                 onFocus={() => {
                   if (state === "error") {
@@ -244,31 +274,50 @@ export default function Home() {
                 id="syn-text"
                 placeholder="Write here..."
               />
-              <Badge
-                className="self-end tabular-nums"
-                highContrast
-                variant="surface"
-              >
+              <Badge className="self-end tabular-nums" variant="surface">
                 {text.length} / {MAX_TEXT_LENGTH}
               </Badge>
-              <Button type="submit" size={"3"}>
-                {state === "ready" && "Start Streaming"}
+              <Flex gap={"3"} align={"center"}>
+                {state === "ready" && (
+                  <Button type="submit">
+                    <Flex gap={"2"} align={"center"}>
+                      Start Streaming
+                      <PlayIcon />
+                    </Flex>
+                  </Button>
+                )}
+                {state === "error" && (
+                  <Button type="submit">
+                    <ReloadIcon />
+                  </Button>
+                )}
                 {state === "streaming" && "Synthesizing..."}
-                {state === "playing" && "Playing..."}
-                {state === "error" && "Retry"}
-              </Button>
+                {state === "streaming" && (
+                  <Button type="button" onClick={stopAudio}>
+                    <Cross1Icon />
+                  </Button>
+                )}
+                {state === "playing" && (
+                  <Button type="button" onClick={stopAudio}>
+                    <StopIcon />
+                  </Button>
+                )}
+              </Flex>
             </form>
           </Flex>
         </Container>
       </div>
       <footer className="w-full py-4 mt-4 text-center">
-        <Text as="p" highContrast color="green" size={"4"}>
-          Powered by Resemble.ai
+        <Text as="p" color="green">
+          Powered by{" "}
+          <Link underline="hover" color="green" href="https://www.resemble.ai">
+            Resemble.ai
+          </Link>
         </Text>
         <img
           src="https://www.resemble.ai/wp-content/uploads/2021/05/logo.webp"
           alt="Resemble AI Logo"
-          className="mx-auto w-32"
+          className="mx-auto mt-2 w-32"
         />
       </footer>
     </div>

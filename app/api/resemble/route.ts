@@ -93,40 +93,19 @@ async function* audioChunkGenerator(text: string) {
 }
 
 export async function POST(request: Request) {
-  try {
-    const req = await request.json();
-    const query = req.query;
+  const req = await request.json();
+  const query = req.query;
 
-    let iterator;
-    let stream;
+  let iterator;
+  let stream;
 
-    iterator = audioChunkGenerator(query);
-    stream = iteratorToStream(iterator);
+  iterator = audioChunkGenerator(query);
+  stream = iteratorToStream(iterator);
 
-    // Set up the response with audio/wav content type
-    const headers = new Headers();
-    headers.set("Content-Type", "audio/wav");
+  // Set up the response with audio/wav content type
+  const headers = new Headers();
+  headers.set("Content-Type", "audio/wav");
 
-    const response = new Response(stream, { headers });
-    return response;
-  } catch (error) {
-    // Log the error for server-side debugging
-    console.error("Error in POST API route:", error);
-
-    // Create an error response with a 500 status code and a JSON body
-    const errorResponse = new Response(
-      JSON.stringify({
-        error: "Internal Server Error",
-        message: "Something went wrong on the server.",
-      }),
-      {
-        status: 500, // Internal Server Error
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    return errorResponse;
-  }
+  const response = new Response(stream, { headers });
+  return response;
 }

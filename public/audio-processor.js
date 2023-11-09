@@ -11,7 +11,7 @@ class AudioProcessor extends AudioWorkletProcessor {
         if (event.data.type === "audio-end") {
           this.isEndofChunks = true;
         }
-        if (event.data.type === "stream-error") {
+        if (event.data.type === "stop-processor") {
           this.isProcessingAllowed = false;
           this.audioQueue = []; // Clear the queue to start fresh
         }
