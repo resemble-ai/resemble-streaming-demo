@@ -285,7 +285,7 @@ export default function Home() {
                   placeholder="Write here..."
                 />
                 {state === "streaming" && (
-                  <div className="absolute bg-transparent bg-white  z-10 top-1/3 left-1/2 flex items-center justify-center">
+                  <div className="absolute bg-transparent  z-10 top-1/3 left-1/2 flex items-center justify-center">
                     <div className="flex items-center">
                       <svg
                         className="animate-spin h-8 w-8 text-green-800"
