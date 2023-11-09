@@ -1,113 +1,248 @@
-import Image from 'next/image'
+/* eslint-disable @next/next/no-img-element */
+"use client";
+
+import { useState, FormEvent, useRef, useEffect } from "react";
+import { int16ArrayToFloat32Array } from "./utils";
+import { Button, Container, Flex, TextArea } from "@radix-ui/themes";
+
+const BUFFER_SIZE = 128;
+const INITIAL_BUFFER_SIZE = 500;
+const WAV_HEADER_SIZE = 44;
+const decoder = new TextDecoder("utf-8");
 
 export default function Home() {
+  const [state, setState] = useState<
+    "ready" | "streaming" | "playing" | "error"
+  >("ready");
+  const [text, setText] = useState("");
+  const audioQueueRef = useRef<Float32Array[]>([]);
+  const hasSkippedHeaderRef = useRef(false);
+  const scriptNodeRef = useRef<AudioWorkletNode | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | undefined>(
+    undefined
+  );
+
+  useEffect(() => {
+    // Cleanup function to handle component unmount
+    return () => {
+      if (readerRef.current) {
+        readerRef.current.cancel(); // Cancel the stream reading when unmounting
+      }
+    };
+  }, []);
+
+  const playAudioStream = async (response: Response) => {
+    const reader = response.body?.getReader();
+    readerRef.current = reader;
+
+    if (reader) {
+      reader
+        .read()
+        .then(function process({ done, value }) {
+          // In our api implementation, we are streaming error messages if any
+          try {
+            const string = decoder.decode(value);
+            if (string.includes("Error")) {
+              setState("error");
+              if (scriptNodeRef.current && scriptNodeRef.current.port) {
+                scriptNodeRef.current.port.postMessage({
+                  type: "stream-error",
+                });
+              }
+              return;
+            }
+          } catch (error) {}
+
+          if (done) {
+            // Signal the end of the audio stream
+            if (scriptNodeRef.current && scriptNodeRef.current.port) {
+              console.log('Sending "audio-end" message to Audio Worklet');
+              scriptNodeRef.current.port.postMessage({ type: "audio-end" });
+            }
+            setState("ready");
+            return;
+          }
+
+          if (!hasSkippedHeaderRef.current && value) {
+            value = value.slice(WAV_HEADER_SIZE);
+            hasSkippedHeaderRef.current = true;
+            console.log("Header skipped, audio data begins:", value);
+          }
+
+          if (value) {
+            const audioData = int16ArrayToFloat32Array(
+              new Int16Array(value.buffer)
+            );
+            let startIdx = 0;
+
+            while (startIdx < audioData.length) {
+              const chunkSize = Math.min(
+                audioData.length - startIdx,
+                BUFFER_SIZE
+              );
+              const chunk = audioData.slice(startIdx, startIdx + chunkSize);
+
+              audioQueueRef.current.push(chunk);
+              startIdx += chunkSize;
+
+              // // Check if the audio is playing and send the chunk to the worklet
+              // if (
+              //   !isPlayingRef.current &&
+              //   audioQueueRef.current.length >= INITIAL_BUFFER_SIZE
+              // ) {
+              //   isPlayingRef.current = true;
+
+              //   // empty the queue
+              //   console.log("emptying the queue");
+              //   for (let i = 0; i < INITIAL_BUFFER_SIZE; i++) {
+              //     const chunk = audioQueueRef.current.shift();
+              //     if (scriptNodeRef.current) {
+              //       scriptNodeRef.current.port.postMessage({
+              //         type: "audio-chunk",
+              //         chunk,
+              //       });
+              //     }
+              //   }
+              // }
+
+              if (scriptNodeRef.current) {
+                scriptNodeRef.current.port.postMessage({
+                  type: "audio-chunk",
+                  chunk,
+                });
+              }
+            }
+            queueMicrotask(() => {
+              reader.read().then(process);
+            });
+          }
+        })
+        .catch((error) => {
+          console.log("Error reading audio stream:", error);
+        });
+    }
+  };
+
+  const handleSynthesis = async (text: string) => {
+    if (scriptNodeRef.current && scriptNodeRef.current.port) {
+      scriptNodeRef.current.port.postMessage({ type: "reset-processor" });
+    }
+    try {
+      setState("streaming");
+      const res = await fetch("/api/resemble", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query: text }),
+      });
+      setState("playing");
+      playAudioStream(res);
+    } catch (error) {
+      console.error("Error:", error);
+    }
+  };
+
+  const handleFormSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    // TODO: enforce character limit here and an error UI
+    if (text.length === 0 || state === "streaming" || state === "playing") {
+      return;
+    }
+
+    hasSkippedHeaderRef.current = false;
+    audioQueueRef.current = [];
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext ||
+        window.webkitAudioContext)({
+        sampleRate: 22050,
+      });
+    }
+
+    const initAudioWorklet = async () => {
+      try {
+        if (audioContextRef.current) {
+          // https://developer.mozilla.org/en-US/docs/Web/API/AudioWorkletNode/port#examples
+          await audioContextRef.current?.audioWorklet.addModule(
+            "/audio-processor.js"
+          );
+          scriptNodeRef.current = new AudioWorkletNode(
+            audioContextRef.current,
+            "audio-processor"
+          );
+          scriptNodeRef.current.connect(audioContextRef?.current.destination);
+        }
+      } catch (error) {
+        console.error("Error initializing audio worklet:", error);
+      }
+    };
+
+    // If the scriptNode already exists, disconnect it to reset
+    if (scriptNodeRef.current) {
+      scriptNodeRef.current.disconnect();
+      scriptNodeRef.current = null;
+    }
+
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume();
+      initAudioWorklet();
+    } else {
+      initAudioWorklet();
+    }
+
+    setState("streaming");
+    await handleSynthesis(text);
+  };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
+    <div className="flex flex-col h-screen">
+      <div className="mb-auto mt-auto">
+        <Container>
+          <Flex asChild gap={"3"} direction={"column"} align={"center"}>
+            <form
+              onSubmit={(e) => {
+                handleFormSubmit(e);
+              }}
+            >
+              <TextArea
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value);
+                }}
+                onFocus={() => {
+                  if (state === "error") {
+                    setState("ready");
+                  }
+                }}
+                disabled={state === "playing" || state === "streaming"}
+                className="self-stretch"
+                variant="soft"
+                size="3"
+                name="syn-text"
+                id="syn-text"
+                placeholder="Write here..."
+              />
+              <Button type="submit">
+                {state === "ready" && "Synthesize"}
+                {state === "streaming" && "Synthesizing..."}
+                {state === "playing" && "Playing..."}
+                {state === "error" && "Error..."}
+              </Button>
+            </form>
+          </Flex>
+        </Container>
       </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px] z-[-1]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
+      <footer className="w-full py-4 mt-4 text-center">
+        <p className="mb-2">Powered by</p>
+        <img
+          src="https://www.resemble.ai/wp-content/uploads/2021/05/logo.webp"
+          alt="Resemble AI Logo"
+          className="mx-auto w-32"
         />
-      </div>
-
-      <div className="mb-32 grid text-center lg:max-w-5xl lg:w-full lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore the Next.js 13 playground.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
-    </main>
-  )
+      </footer>
+    </div>
+  );
 }
