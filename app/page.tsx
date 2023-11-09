@@ -288,18 +288,27 @@ export default function Home() {
                 )}
                 {state === "error" && (
                   <Button type="submit">
-                    <ReloadIcon />
+                    <Flex gap={"2"} align={"center"}>
+                      Retry
+                      <ReloadIcon />
+                    </Flex>
                   </Button>
                 )}
                 {state === "streaming" && "Synthesizing..."}
                 {state === "streaming" && (
                   <Button type="button" onClick={stopAudio}>
-                    <Cross1Icon />
+                    <Flex gap={"2"} align={"center"}>
+                      Cancel
+                      <Cross1Icon />
+                    </Flex>
                   </Button>
                 )}
                 {state === "playing" && (
                   <Button type="button" onClick={stopAudio}>
-                    <StopIcon />
+                    <Flex gap={"2"} align={"center"}>
+                      Stop
+                      <StopIcon />
+                    </Flex>
                   </Button>
                 )}
               </Flex>
