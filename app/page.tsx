@@ -3,11 +3,20 @@
 
 import { useState, FormEvent, useRef, useEffect } from "react";
 import { int16ArrayToFloat32Array } from "./utils";
-import { Button, Container, Flex, TextArea } from "@radix-ui/themes";
+import {
+  Badge,
+  Button,
+  Container,
+  Flex,
+  Text,
+  TextArea,
+} from "@radix-ui/themes";
+import Swal from "sweetalert2";
 
 const BUFFER_SIZE = 128;
 const INITIAL_BUFFER_SIZE = 500;
 const WAV_HEADER_SIZE = 44;
+const MAX_TEXT_LENGTH = 2000;
 const decoder = new TextDecoder("utf-8");
 
 export default function Home() {
@@ -50,6 +59,11 @@ export default function Home() {
                   type: "stream-error",
                 });
               }
+              Swal.fire({
+                title: "Error!",
+                text: "Something went wrong. Please try reducing the number of sentences in your query and try again.",
+                icon: "error",
+              });
               return;
             }
           } catch (error) {}
@@ -199,7 +213,7 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-screen">
-      <div className="mb-auto mt-auto">
+      <div className="mb-auto mt-auto p-4">
         <Container>
           <Flex asChild gap={"3"} direction={"column"} align={"center"}>
             <form
@@ -208,9 +222,12 @@ export default function Home() {
               }}
             >
               <TextArea
+                autoFocus
                 value={text}
                 onChange={(e) => {
-                  setText(e.target.value);
+                  if (+e.target.value <= MAX_TEXT_LENGTH) {
+                    setText(e.target.value);
+                  }
                 }}
                 onFocus={() => {
                   if (state === "error") {
@@ -221,22 +238,33 @@ export default function Home() {
                 className="self-stretch"
                 variant="soft"
                 size="3"
+                maxLength={2000}
+                rows={5}
                 name="syn-text"
                 id="syn-text"
                 placeholder="Write here..."
               />
-              <Button type="submit">
-                {state === "ready" && "Synthesize"}
+              <Badge
+                className="self-end tabular-nums"
+                highContrast
+                variant="surface"
+              >
+                {text.length} / {MAX_TEXT_LENGTH}
+              </Badge>
+              <Button type="submit" size={"3"}>
+                {state === "ready" && "Start Streaming"}
                 {state === "streaming" && "Synthesizing..."}
                 {state === "playing" && "Playing..."}
-                {state === "error" && "Error..."}
+                {state === "error" && "Retry"}
               </Button>
             </form>
           </Flex>
         </Container>
       </div>
       <footer className="w-full py-4 mt-4 text-center">
-        <p className="mb-2">Powered by</p>
+        <Text as="p" highContrast color="green" size={"4"}>
+          Powered by Resemble.ai
+        </Text>
         <img
           src="https://www.resemble.ai/wp-content/uploads/2021/05/logo.webp"
           alt="Resemble AI Logo"
