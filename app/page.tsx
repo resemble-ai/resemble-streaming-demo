@@ -273,7 +273,7 @@ export default function Home() {
                         setTtfs(0);
                         setNetworkTime(0);
                       }
-                      setText(e.target.value.trim());
+                      setText(e.target.value);
                     }}
                     onFocus={() => {
                       if (state === "error") {
