@@ -418,13 +418,7 @@ const FormFooter = ({ ttfs, networkTime }: FormFooterProps) => {
 
 const Footer = () => {
   return (
-    <footer className="w-full py-4 mt-4 text-center">
-      <Text as="p" color="green">
-        Powered by{" "}
-        <Link underline="hover" color="green" href="https://www.resemble.ai">
-          Resemble.ai
-        </Link>
-      </Text>
+    <footer className="w-full py-4 mt-2 text-center">
       <a href="https://www.resemble.ai" aria-label="Visit Resemble AI website">
         <img
           src="https://www.resemble.ai/wp-content/uploads/2021/05/logo.webp"
