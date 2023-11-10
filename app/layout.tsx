@@ -4,7 +4,7 @@ import "./theme-config.css";
 
 import type { Metadata } from "next";
 import { inter } from "@/app/ui/fonts";
-import { Theme, ThemePanel } from "@radix-ui/themes";
+import { Theme } from "@radix-ui/themes";
 
 export const metadata: Metadata = {
   title: "Resemble Streaming Demo",
@@ -18,7 +18,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} antialiased`}>
+      <body className={`${inter.className} antialiased  bg-slate-100`}>
         <Theme accentColor="green">
           {children}
           {/* <ThemePanel /> */}

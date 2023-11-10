@@ -11,9 +11,12 @@ import {
   Text,
   TextArea,
   Link,
+  Tooltip,
+  Card,
 } from "@radix-ui/themes";
 import {
   Cross1Icon,
+  InfoCircledIcon,
   PlayIcon,
   ReloadIcon,
   StopIcon,
@@ -22,18 +25,20 @@ import {
 import Swal from "sweetalert2";
 
 const BUFFER_SIZE = 128;
-const INITIAL_BUFFER_SIZE = 500;
 const WAV_HEADER_SIZE = 44;
 const MAX_TEXT_LENGTH = 2000;
-const decoder = new TextDecoder("utf-8");
 
 export default function Home() {
   const [state, setState] = useState<
     "ready" | "streaming" | "playing" | "error"
   >("ready");
   const [text, setText] = useState("");
+  const [ttfs, setTtfs] = useState(0);
+  const [networkTime, setNetworkTime] = useState(0);
+
   const audioQueueRef = useRef<Float32Array[]>([]);
   const hasSkippedHeaderRef = useRef(false);
+  const hasReadMetadataRef = useRef(false);
   const scriptNodeRef = useRef<AudioWorkletNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const stopRequestedRef = useRef(false);
@@ -51,7 +56,8 @@ export default function Home() {
   }, []);
 
   const playAudioStream = async (
-    reader: ReadableStreamDefaultReader<Uint8Array>
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    startTime: number
   ) => {
     readerRef.current = reader;
 
@@ -59,25 +65,6 @@ export default function Home() {
       readerRef.current
         .read()
         .then(function process({ done, value }) {
-          // In our api implementation, we are streaming error messages if any
-          try {
-            const string = decoder.decode(value);
-            if (string.includes("Error")) {
-              setState("error");
-              if (scriptNodeRef.current && scriptNodeRef.current.port) {
-                scriptNodeRef.current.port.postMessage({
-                  type: "stop-processor",
-                });
-              }
-              Swal.fire({
-                title: "Error!",
-                text: "Something went wrong. Please try reducing the number of sentences in your query and try again.",
-                icon: "error",
-              });
-              return;
-            }
-          } catch (error) {}
-
           if (stopRequestedRef.current) {
             return;
           }
@@ -91,12 +78,24 @@ export default function Home() {
             return;
           }
 
+          // read streaming metadata
+          if (!hasReadMetadataRef.current && value) {
+            const metadataView = new DataView(value.buffer, 0, 8); // Adjust size if needed (i.e if you added more metadata to the response)
+            const timeToFirstSound = metadataView.getFloat64(0, true);
+            setTtfs(Math.round(timeToFirstSound));
+            setNetworkTime(Math.round(performance.now() - startTime));
+            hasReadMetadataRef.current = true;
+            value = value.slice(8);
+          }
+
+          // skip wav header
           if (!hasSkippedHeaderRef.current && value) {
             value = value.slice(WAV_HEADER_SIZE);
             hasSkippedHeaderRef.current = true;
             console.log("Header skipped, audio data begins:", value);
           }
 
+          // process audio data
           if (value) {
             const audioData = int16ArrayToFloat32Array(
               new Int16Array(value.buffer)
@@ -125,30 +124,22 @@ export default function Home() {
             }
             if (!stopRequestedRef.current) {
               queueMicrotask(() => {
-                readerRef.current
-                  ?.read()
-                  .then(process)
-                  .catch((error) => {
-                    console.log("Error reading audio stream:", error);
-                    Swal.fire({
-                      title: "Error!",
-                      text: "Something went wrong. Please try again.",
-                      icon: "error",
-                    });
-                  });
+                readerRef.current?.read().then(process).catch(errorHandler);
               });
             }
           }
         })
-        .catch((error) => {
-          console.log("Error reading audio stream:", error);
-          Swal.fire({
-            title: "Error!",
-            text: "Something went wrong. Please try again.",
-            icon: "error",
-          });
-        });
+        .catch(errorHandler);
     }
+  };
+
+  const errorHandler = (error: Error) => {
+    console.log("Error reading audio stream:", error);
+    Swal.fire({
+      title: "Error!",
+      text: "Something went wrong. Please try again.",
+      icon: "error",
+    });
   };
 
   const handleSynthesis = async (text: string) => {
@@ -159,6 +150,9 @@ export default function Home() {
     audioQueueRef.current = [];
     stopRequestedRef.current = false;
     hasSkippedHeaderRef.current = false;
+    hasReadMetadataRef.current = false;
+
+    const startTime = performance.now();
 
     try {
       setState("streaming");
@@ -167,12 +161,13 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
+        cache: "no-store", // TODO: check if this is needed
         body: JSON.stringify({ query: text }),
       });
       const reader = res.body?.getReader();
       if (reader) {
         readerRef.current = reader;
-        playAudioStream(readerRef.current);
+        playAudioStream(readerRef.current, startTime);
       }
     } catch (error) {
       console.error("Error:", error);
@@ -207,6 +202,9 @@ export default function Home() {
     if (text.length === 0 || state === "streaming" || state === "playing") {
       return;
     }
+
+    setTtfs(0);
+    setNetworkTime(0);
 
     hasSkippedHeaderRef.current = false;
     audioQueueRef.current = [];
@@ -254,117 +252,186 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-screen">
-      <div className="mb-auto mt-auto p-4">
+      <div className="mb-auto mt-auto p-2 sm:p-4 md:p-6 lg:p-8">
         <Container>
-          <Flex asChild gap={"3"} direction={"column"} align={"center"}>
-            <form
-              onSubmit={(e) => {
-                handleFormSubmit(e);
-              }}
-            >
-              <div className="relative self-stretch">
-                <TextArea
-                  autoFocus
-                  value={text}
-                  onChange={(e) => {
-                    setText(e.target.value);
-                  }}
-                  onFocus={() => {
-                    if (state === "error") {
-                      setState("ready");
-                    }
-                  }}
-                  disabled={state === "playing" || state === "streaming"}
-                  className="self-stretch relative"
-                  variant="soft"
-                  size="3"
-                  maxLength={2000}
-                  rows={5}
-                  name="syn-text"
-                  id="syn-text"
-                  placeholder="Write here..."
-                />
-                {state === "streaming" && (
-                  <div className="absolute bg-transparent  z-10 top-1/3 left-1/2 flex items-center justify-center">
-                    <div className="flex items-center">
-                      <svg
-                        className="animate-spin h-8 w-8 text-green-800"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
+          <Card className="shadow-xl md:p-4 lg:p-6 xl:p-8">
+            <Flex asChild gap={"4"} direction={"column"} align={"center"}>
+              <form
+                onSubmit={(e) => {
+                  handleFormSubmit(e);
+                }}
+              >
+                <div className="relative self-stretch">
+                  <label htmlFor="syn-text" className="sr-only">
+                    Synthesize text
+                  </label>
+                  <TextArea
+                    autoFocus
+                    value={text}
+                    onChange={(e) => {
+                      if (ttfs !== 0 || networkTime !== 0) {
+                        setTtfs(0);
+                        setNetworkTime(0);
+                      }
+                      setText(e.target.value.trim());
+                    }}
+                    onFocus={() => {
+                      if (state === "error") {
+                        setState("ready");
+                      }
+                    }}
+                    disabled={state === "playing" || state === "streaming"}
+                    className="self-stretch relative"
+                    variant="soft"
+                    size="3"
+                    maxLength={2000}
+                    rows={8}
+                    name="syn-text"
+                    id="syn-text"
+                    placeholder="Resemble’s AI voice generator lets you create realistic human–like voiceovers in seconds."
+                  />
+                  {state === "streaming" && (
+                    <div className="absolute bg-transparent z-10 top-1/3 left-1/2 flex items-center justify-center">
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        className="flex items-center"
                       >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          stroke-width="4"
-                        ></circle>
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
-                      </svg>
+                        <svg
+                          className="animate-spin h-8 w-8 text-green-800"
+                          xmlns="http://www.w3.org/2000/svg"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <circle
+                            className="opacity-25"
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                          ></circle>
+                          <path
+                            className="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                          ></path>
+                        </svg>
+                        <span className="sr-only">Loading...</span>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-              <Badge className="self-end tabular-nums" variant="surface">
-                {text.length} / {MAX_TEXT_LENGTH}
-              </Badge>
-              <Flex gap={"3"} align={"center"}>
-                {state === "ready" && (
-                  <Button type="submit">
-                    <Flex gap={"2"} align={"center"}>
-                      Start Streaming
-                      <PlayIcon />
-                    </Flex>
-                  </Button>
-                )}
-                {state === "error" && (
-                  <Button type="submit">
-                    <Flex gap={"2"} align={"center"}>
-                      Retry
-                      <ReloadIcon />
-                    </Flex>
-                  </Button>
-                )}
-                {state === "streaming" && (
-                  <Button type="button" onClick={stopAudio}>
-                    <Flex gap={"2"} align={"center"}>
-                      Cancel
-                      <Cross1Icon />
-                    </Flex>
-                  </Button>
-                )}
-                {state === "playing" && (
-                  <Button type="button" onClick={stopAudio}>
-                    <Flex gap={"2"} align={"center"}>
-                      Stop
-                      <StopIcon />
-                    </Flex>
-                  </Button>
-                )}
-              </Flex>
-            </form>
-          </Flex>
+                  )}
+                </div>
+
+                <Badge className="tabular-nums self-end">
+                  {text.length} / {MAX_TEXT_LENGTH}
+                </Badge>
+
+                <Flex gap={"3"} align={"center"}>
+                  {state === "ready" && (
+                    <Button type="submit">
+                      <Flex gap={"2"} align={"center"}>
+                        Synthesize
+                        <PlayIcon aria-hidden />
+                      </Flex>
+                    </Button>
+                  )}
+                  {state === "error" && (
+                    <Button type="submit">
+                      <Flex gap={"2"} align={"center"}>
+                        Retry
+                        <ReloadIcon aria-hidden />
+                      </Flex>
+                    </Button>
+                  )}
+                  {state === "streaming" && (
+                    <Button type="button" onClick={stopAudio}>
+                      <Flex gap={"2"} align={"center"}>
+                        Cancel
+                        <Cross1Icon aria-hidden />
+                      </Flex>
+                    </Button>
+                  )}
+                  {state === "playing" && (
+                    <Button type="button" onClick={stopAudio}>
+                      <Flex gap={"2"} align={"center"}>
+                        Stop
+                        <StopIcon aria-hidden />
+                      </Flex>
+                    </Button>
+                  )}
+                </Flex>
+
+                <FormFooter ttfs={ttfs} networkTime={networkTime} />
+              </form>
+            </Flex>
+          </Card>
         </Container>
       </div>
-      <footer className="w-full py-4 mt-4 text-center">
-        <Text as="p" color="green">
-          Powered by{" "}
-          <Link underline="hover" color="green" href="https://www.resemble.ai">
-            Resemble.ai
-          </Link>
-        </Text>
-        <img
-          src="https://www.resemble.ai/wp-content/uploads/2021/05/logo.webp"
-          alt="Resemble AI Logo"
-          className="mx-auto mt-2 w-32"
-        />
-      </footer>
+      <Footer />
     </div>
   );
 }
+
+type FormFooterProps = {
+  ttfs: number;
+  networkTime: number;
+};
+const FormFooter = ({ ttfs, networkTime }: FormFooterProps) => {
+  return (
+    <Flex
+      justify={"between"}
+      align={"start"}
+      className="self-stretch"
+      wrap={"wrap"}
+      gap={"4"}
+    >
+      {
+        <Badge size={"2"} className="!flex !gap-8">
+          <span className="flex gap-1 items-center">
+            <Text color="green">Server time</Text>
+            <Tooltip content="Time our server took for generating first chunk in the stream.">
+              <InfoCircledIcon color="green" />
+            </Tooltip>
+          </span>
+          <Badge color="gold" variant="surface">
+            <span>{ttfs} ms</span>
+          </Badge>
+        </Badge>
+      }
+      {
+        <Badge size={"2"} className="!flex !gap-8">
+          <span className="flex gap-1 items-center">
+            <Text color="green">Network time</Text>
+            <Tooltip content="Time taken, including network delay to generate the first chunk">
+              <InfoCircledIcon color="green" />
+            </Tooltip>
+          </span>
+          <Badge color="gold" variant="surface">
+            <span>{networkTime} ms</span>
+          </Badge>
+        </Badge>
+      }
+    </Flex>
+  );
+};
+
+const Footer = () => {
+  return (
+    <footer className="w-full py-4 mt-4 text-center">
+      <Text as="p" color="green">
+        Powered by{" "}
+        <Link underline="hover" color="green" href="https://www.resemble.ai">
+          Resemble.ai
+        </Link>
+      </Text>
+      <a href="https://www.resemble.ai" aria-label="Visit Resemble AI website">
+        <img
+          src="https://www.resemble.ai/wp-content/uploads/2021/05/logo.webp"
+          alt="Resemble AI Logo"
+          className="mx-auto mt-2 w-48"
+        />
+      </a>
+    </footer>
+  );
+};

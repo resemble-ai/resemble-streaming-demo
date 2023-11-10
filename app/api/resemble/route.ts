@@ -21,7 +21,7 @@ Resemble.setSynthesisUrl(RESEMBLE_ENDPOINT);
 function iteratorToStream(iterator: AsyncGenerator<Uint8Array, void, unknown>) {
   return new ReadableStream({
     async pull(controller) {
-      // need to catch any error here as otherwise we will get a Error: failed to pipe response from Next
+      // need to catch any error here as otherwise we will get- Error: failed to pipe response
       try {
         const { value, done } = await iterator.next();
         if (done) {
@@ -31,8 +31,8 @@ function iteratorToStream(iterator: AsyncGenerator<Uint8Array, void, unknown>) {
         }
       } catch (error) {
         if (error instanceof Error) {
-          // Crude error handling: client can show an error UI based on the error message
-          controller.enqueue("Error: " + error.message);
+          // TODO: at this point we should let the client know that something went wrong
+          console.log(error.message);
         }
         controller.close();
       }
@@ -40,7 +40,6 @@ function iteratorToStream(iterator: AsyncGenerator<Uint8Array, void, unknown>) {
   });
 }
 
-let buffer = new Uint8Array(0);
 async function* audioChunkGenerator(text: string) {
   let startResemble = performance.now();
   let isFirstChunk = true;
@@ -60,18 +59,6 @@ async function* audioChunkGenerator(text: string) {
     const { data: chunk } = out as { data: Uint8Array };
 
     if (chunk) {
-      // Add chunk to buffer
-      const newBuffer = new Uint8Array(buffer.byteLength + chunk.byteLength);
-      newBuffer.set(buffer);
-      newBuffer.set(chunk, buffer.byteLength);
-      buffer = newBuffer;
-
-      // Only yield if byte length is even
-      if (buffer.byteLength % 2 === 0) {
-        yield buffer;
-        buffer = new Uint8Array(0); // Reset buffer
-      }
-
       if (isFirstChunk) {
         const endResemble = performance.now();
         const timeToFirstSound = endResemble - startResemble;
@@ -79,13 +66,23 @@ async function* audioChunkGenerator(text: string) {
           `Time to first sound for Resemble: ${timeToFirstSound.toFixed(2)}ms`
         );
         isFirstChunk = false;
-      }
-    }
-  }
 
-  // Yield any remaining data in the buffer when stream ends
-  if (buffer.byteLength > 0) {
-    yield buffer;
+        // Create a fixed-size buffer for the metadata: time to first sound of 8 bytes.
+        // the client will then parse this metadata, then the header and finally the audio data:
+
+        // In JavaScript, a number is represented as a double-precision 64-bit binary format IEEE 754 value (a "double").
+
+        // In the context of timing data, such as "time to first sound" measurement, 8 bytes for a floating-point
+        // number provide extremely high precision and a vast range that is more than sufficient for our use case😄
+
+        const metadataBuffer = new ArrayBuffer(8);
+        const metadataView = new DataView(metadataBuffer);
+        // Store the timeToFirstSound in the first 8 bytes (as a float64)
+        metadataView.setFloat64(0, timeToFirstSound, true);
+        yield new Uint8Array(metadataBuffer);
+      }
+      yield chunk;
+    }
   }
 }
 
@@ -93,13 +90,9 @@ export async function POST(request: Request) {
   const req = await request.json();
   const query = req.query;
 
-  let iterator;
-  let stream;
+  const iterator = audioChunkGenerator(query);
+  const stream = iteratorToStream(iterator);
 
-  iterator = audioChunkGenerator(query);
-  stream = iteratorToStream(iterator);
-
-  // Set up the response with audio/wav content type
   const headers = new Headers();
   headers.set("Content-Type", "audio/wav");
 
