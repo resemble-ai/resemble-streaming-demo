@@ -1,5 +1,4 @@
-## Getting Started
-
+# Getting Started
 
 First configure the environment settings:
 
