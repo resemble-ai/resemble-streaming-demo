@@ -2,7 +2,11 @@
 "use client";
 
 import { useState, FormEvent, useRef, useEffect } from "react";
-import { int16ArrayToFloat32Array } from "./utils";
+import {
+  inspectLast10ValuesInChunks,
+  int16ArrayToFloat32Array,
+  padAudioData,
+} from "./utils";
 import {
   Badge,
   Button,
@@ -97,9 +101,9 @@ export default function Home() {
 
           // process audio data
           if (value) {
-            const audioData = int16ArrayToFloat32Array(
-              new Int16Array(value.buffer)
-            );
+            const paddedData = padAudioData(value.buffer);
+            console.log(inspectLast10ValuesInChunks(paddedData));
+            const audioData = int16ArrayToFloat32Array(paddedData);
             let startIdx = 0;
 
             while (startIdx < audioData.length) {
