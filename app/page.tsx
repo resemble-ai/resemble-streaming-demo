@@ -2,11 +2,7 @@
 "use client";
 
 import { useState, FormEvent, useRef, useEffect } from "react";
-import {
-  inspectLast10ValuesInChunks,
-  int16ArrayToFloat32Array,
-  padAudioData,
-} from "./utils";
+import { int16ArrayToFloat32Array, mergeUint8Arrays } from "./utils";
 import {
   Badge,
   Button,
@@ -14,7 +10,6 @@ import {
   Flex,
   Text,
   TextArea,
-  Link,
   Tooltip,
   Card,
 } from "@radix-ui/themes";
@@ -32,6 +27,7 @@ const BUFFER_SIZE = 128;
 const WAV_HEADER_SIZE = 44;
 const MAX_TEXT_LENGTH = 2000;
 
+let isAudioWorkletModuleAdded = false;
 export default function Home() {
   const [state, setState] = useState<
     "ready" | "streaming" | "playing" | "error"
@@ -40,12 +36,13 @@ export default function Home() {
   const [ttfs, setTtfs] = useState(0);
   const [networkTime, setNetworkTime] = useState(0);
 
-  const audioQueueRef = useRef<Float32Array[]>([]);
   const hasSkippedHeaderRef = useRef(false);
   const hasReadMetadataRef = useRef(false);
   const scriptNodeRef = useRef<AudioWorkletNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const stopRequestedRef = useRef(false);
+  const streamBufferRef = useRef<Uint8Array[]>([]);
+  const streamEndedRef = useRef(false);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | undefined>(
     undefined
   );
@@ -59,81 +56,69 @@ export default function Home() {
     };
   }, []);
 
-  const playAudioStream = async (
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    startTime: number
-  ) => {
-    readerRef.current = reader;
+  const kickOffBufferredPlayback = () => {
+    console.log("kick off bufferred playback");
+    if (streamEndedRef.current && streamBufferRef.current.length === 0) {
+      if (scriptNodeRef.current && scriptNodeRef.current.port) {
+        scriptNodeRef.current.port.postMessage({ type: "audio-end" });
+      }
+      return;
+    }
 
-    if (readerRef.current) {
-      readerRef.current
-        .read()
-        .then(function process({ done, value }) {
-          if (stopRequestedRef.current) {
-            return;
+    while (streamBufferRef.current.length > 0) {
+      let buffer = streamBufferRef.current.shift();
+
+      // Merge chunks until we have an even length buffer
+      if (buffer) {
+        while (buffer.length % 2 === 1 && streamBufferRef.current.length > 0) {
+          const nextBuffer = streamBufferRef.current.shift();
+          if (nextBuffer) {
+            console.log(
+              "Merging odd length buffer of size",
+              buffer.length,
+              "with next buffer of size",
+              nextBuffer.length
+            );
+            buffer = mergeUint8Arrays([buffer, nextBuffer]);
           }
+        }
 
-          if (done) {
-            // Signal the end of the audio stream
-            if (scriptNodeRef.current && scriptNodeRef.current.port) {
-              console.log('Sending "audio-end" message to Audio Worklet');
-              scriptNodeRef.current.port.postMessage({ type: "audio-end" });
-            }
-            return;
+        if (buffer.length % 2 === 1) {
+          // If the buffer is still of odd length and there are no more chunks to merge, put it back and break the loop
+          console.log(
+            "Odd length buffer remains, putting it back:",
+            buffer.length
+          );
+          streamBufferRef.current.unshift(buffer);
+          break;
+        }
+      }
+
+      if (buffer && buffer.length > 0) {
+        console.log("Processing buffer of even length", buffer.length);
+
+        const audioData = int16ArrayToFloat32Array(
+          new Int16Array(buffer.buffer)
+        );
+        let startIdx = 0;
+
+        while (startIdx < audioData.length) {
+          const chunkSize = Math.min(audioData.length - startIdx, BUFFER_SIZE);
+          const chunk = audioData.slice(startIdx, startIdx + chunkSize);
+
+          startIdx += chunkSize;
+
+          if (state !== "playing") {
+            setState("playing");
           }
-
-          // read streaming metadata
-          if (!hasReadMetadataRef.current && value) {
-            const metadataView = new DataView(value.buffer, 0, 8); // Adjust size if needed (i.e if you added more metadata to the response)
-            const timeToFirstSound = metadataView.getFloat64(0, true);
-            setTtfs(Math.round(timeToFirstSound));
-            setNetworkTime(Math.round(performance.now() - startTime));
-            hasReadMetadataRef.current = true;
-            value = value.slice(8);
+          if (scriptNodeRef.current && !stopRequestedRef.current) {
+            scriptNodeRef.current.port.postMessage({
+              type: "audio-chunk",
+              chunk,
+            });
           }
-
-          // skip wav header
-          if (!hasSkippedHeaderRef.current && value) {
-            value = value.slice(WAV_HEADER_SIZE);
-            hasSkippedHeaderRef.current = true;
-            console.log("Header skipped, audio data begins:", value);
-          }
-
-          // process audio data
-          if (value) {
-            const paddedData = padAudioData(value.buffer);
-            console.log(inspectLast10ValuesInChunks(paddedData));
-            const audioData = int16ArrayToFloat32Array(paddedData);
-            let startIdx = 0;
-
-            while (startIdx < audioData.length) {
-              const chunkSize = Math.min(
-                audioData.length - startIdx,
-                BUFFER_SIZE
-              );
-              const chunk = audioData.slice(startIdx, startIdx + chunkSize);
-
-              audioQueueRef.current.push(chunk);
-              startIdx += chunkSize;
-
-              if (state !== "playing") {
-                setState("playing");
-              }
-              if (scriptNodeRef.current) {
-                scriptNodeRef.current.port.postMessage({
-                  type: "audio-chunk",
-                  chunk,
-                });
-              }
-            }
-            if (!stopRequestedRef.current) {
-              queueMicrotask(() => {
-                readerRef.current?.read().then(process).catch(errorHandler);
-              });
-            }
-          }
-        })
-        .catch(errorHandler);
+        }
+      }
     }
   };
 
@@ -151,10 +136,10 @@ export default function Home() {
     if (scriptNodeRef.current && scriptNodeRef.current.port) {
       scriptNodeRef.current.port.postMessage({ type: "reset-processor" });
     }
-    audioQueueRef.current = [];
     stopRequestedRef.current = false;
     hasSkippedHeaderRef.current = false;
     hasReadMetadataRef.current = false;
+    streamBufferRef.current = [];
 
     const startTime = performance.now();
 
@@ -169,12 +154,50 @@ export default function Home() {
         body: JSON.stringify({ query: text }),
       });
       const reader = res.body?.getReader();
+
       if (reader) {
         readerRef.current = reader;
-        playAudioStream(readerRef.current, startTime);
+        let totalstreamlength = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            streamEndedRef.current = true;
+            break;
+          }
+          if (value && value.length > 0) {
+            let chunk = value;
+            // skip metadata and wav header if required
+            if (!hasReadMetadataRef.current) {
+              const metadataView = new DataView(value.buffer, 0, 8); // Adjust size if needed (i.e if you added more metadata to the response)
+              const timeToFirstSound = metadataView.getFloat64(0, true);
+              setTtfs(Math.round(timeToFirstSound));
+              setNetworkTime(Math.round(performance.now() - startTime));
+
+              hasReadMetadataRef.current = true;
+              chunk = chunk.slice(8);
+            }
+
+            // skip wav header
+            if (!hasSkippedHeaderRef.current) {
+              chunk = chunk.slice(WAV_HEADER_SIZE);
+              hasSkippedHeaderRef.current = true;
+            }
+
+            totalstreamlength += value.length;
+            streamBufferRef.current.push(chunk);
+
+            if (state !== "playing") {
+              kickOffBufferredPlayback();
+            }
+          }
+        }
       }
     } catch (error) {
       console.error("Error:", error);
+      if (error instanceof Error) {
+        errorHandler(error);
+      }
     }
   };
 
@@ -197,21 +220,13 @@ export default function Home() {
     if (audioContextRef.current) {
       audioContextRef.current.suspend();
     }
-    audioQueueRef.current = [];
+    streamBufferRef.current = [];
   };
 
   const handleFormSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-
-    if (text.length === 0 || state === "streaming" || state === "playing") {
-      return;
-    }
-
-    setTtfs(0);
-    setNetworkTime(0);
-
+    setState("streaming");
     hasSkippedHeaderRef.current = false;
-    audioQueueRef.current = [];
 
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext ||
@@ -224,34 +239,49 @@ export default function Home() {
       try {
         if (audioContextRef.current) {
           // https://developer.mozilla.org/en-US/docs/Web/API/AudioWorkletNode/port#examples
-          await audioContextRef.current?.audioWorklet.addModule(
-            "/audio-processor.js"
-          );
-          scriptNodeRef.current = new AudioWorkletNode(
-            audioContextRef.current,
-            "audio-processor"
-          );
-          scriptNodeRef.current.connect(audioContextRef?.current.destination);
-          scriptNodeRef.current.port.onmessage = (event) => {
-            if (event.data.type === "playback-complete") {
-              setState("ready");
-            }
-          };
+          if (!isAudioWorkletModuleAdded) {
+            console.log("adding audio worklet");
+            await audioContextRef.current.audioWorklet.addModule(
+              "/audio-processor.js"
+            );
+            isAudioWorkletModuleAdded = true;
+          }
+          if (!scriptNodeRef.current) {
+            console.log("adding script node");
+            scriptNodeRef.current = new AudioWorkletNode(
+              audioContextRef.current,
+              "audio-processor"
+            );
+            scriptNodeRef.current.connect(audioContextRef?.current.destination);
+            scriptNodeRef.current.port.onmessage = (event) => {
+              if (event.data.type === "playback-complete") {
+                setState("ready");
+              }
+              if (event.data.type === "ready-for-next-chunk") {
+                // queueMicrotask(() => {
+                kickOffBufferredPlayback();
+                // });
+              }
+            };
+          }
         }
       } catch (error) {
-        console.error("Error initializing audio worklet:", error);
+        if (error instanceof Error) {
+          errorHandler(error);
+        }
       }
     };
 
     if (audioContextRef.current.state === "suspended") {
       await audioContextRef.current.resume();
-      initAudioWorklet();
+      initAudioWorklet().then(() => {
+        handleSynthesis(text);
+      });
     } else {
-      initAudioWorklet();
+      initAudioWorklet().then(() => {
+        handleSynthesis(text);
+      });
     }
-
-    setState("streaming");
-    await handleSynthesis(text);
   };
 
   return (

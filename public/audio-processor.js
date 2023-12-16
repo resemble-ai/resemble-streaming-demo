@@ -2,6 +2,7 @@ class AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.audioQueue = [];
+    this.isPlaybackComplete = false;
     this.isProcessingAllowed = true;
     console.log("AudioWorkletProcessor constructor: INITIALIZED");
 
@@ -20,6 +21,9 @@ class AudioProcessor extends AudioWorkletProcessor {
           this.audioQueue = []; // Clear the queue to start fresh
         }
         if (event.data.type === "audio-chunk") {
+          if (this.isPlaybackComplete) {
+            this.isPlaybackComplete = false;
+          }
           // Ensure chunk is an array before spreading
           if (Array.isArray(event.data.chunk)) {
             this.audioQueue.push(...event.data.chunk);
@@ -35,21 +39,24 @@ class AudioProcessor extends AudioWorkletProcessor {
 
   process(inputs, outputs, parameters) {
     if (!this.isProcessingAllowed) {
-      return false;
+      return true;
     }
     try {
       const output = outputs[0];
       const outputChannel = output[0];
       const audioQueueLength = this.audioQueue.length;
 
-      if (this.isEndofChunks && !audioQueueLength) {
-        console.log("AudioWorkletProcessor process: STOPPED");
+      if (this.isEndofChunks && !audioQueueLength && !this.isPlaybackComplete) {
+        console.log("AudioWorkletProcessor process: playback-complete");
         this.port.postMessage({ type: "playback-complete" });
-        return false; // Stops the processor
+        this.isPlaybackComplete = true;
       }
 
       if (audioQueueLength) {
         const chunk = this.audioQueue.shift(); // Remove the first element from the queue
+        if (this.audioQueue.length === 0) {
+          this.port.postMessage({ type: "ready-for-next-chunk" });
+        }
         outputChannel.set(chunk);
       } else {
         // Fill the output buffer with silence when there's no data
@@ -60,8 +67,8 @@ class AudioProcessor extends AudioWorkletProcessor {
       return true; // Keep the processor alive
     } catch (error) {
       console.error("Error in AudioWorkletProcessor process:", error);
-      return false;
     }
+    return true;
   }
 }
 

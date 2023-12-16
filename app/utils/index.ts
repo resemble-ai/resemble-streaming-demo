@@ -2,11 +2,29 @@ export function int16ArrayToFloat32Array(int16Array: Int16Array) {
   let l = int16Array.length;
   let float32Array = new Float32Array(l);
   for (let i = 0; i < l; i++) {
-    let normalized =
-      int16Array[i] < 0 ? int16Array[i] / 32768 : int16Array[i] / 32767;
-    float32Array[i] = normalized;
+    let normalized = int16Array[i] / 32768.0;
+    float32Array[i] = Math.max(-1, Math.min(1, normalized));
   }
   return float32Array;
+}
+
+export function mergeUint8Arrays(chunks: Uint8Array[]) {
+  // Calculate the total length of all chunks
+  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+
+  // Create a new array with total length
+  const mergedArray = new Uint8Array(totalLength);
+  console.log("mergedArray length", mergedArray.length);
+
+  // Copy each chunk into the merged array
+  let offset = 0;
+  for (const chunk of chunks) {
+    mergedArray.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  console.log(mergedArray.length);
+  return mergedArray;
 }
 
 // The duration of the silence introduced by a single zero padding (if required) depends on the sample rate of the audio data.
